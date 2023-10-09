@@ -75,6 +75,7 @@ class CausalSelfAttention(nn.Module):
             attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
             attn_bias.to(q.dtype)
 
+            #add the bias
             att += attn_bias
 
             att = F.softmax(att, dim=-1)
@@ -92,7 +93,16 @@ class CausalSelfAttention(nn.Module):
         
         # output projection
         y = self.resid_dropout(self.c_proj(y))
-        return y
+        
+        #loss : make k vectors orthogonal 
+        #shape (B, nh, T, hs)
+        mag = (k * k).sum(dim=-1,keepdim=True).sqrt() # (B, nh, T, 1)
+        norm = k / mag
+        loss = (norm @ norm.transpose(-2,-1) - torch.diag(torch.ones(T))).abs().sum() 
+        loss /= norm.size(0) * norm.size(1) * norm.size(2) * norm.size(2)
+        loss = torch.tensor(0.0)
+
+        return y,loss
 
 class MLP(nn.Module):
 
@@ -120,9 +130,10 @@ class Block(nn.Module):
         self.mlp = MLP(config)
 
     def forward(self, x):
-        x = x + self.attn(self.ln_1(x))
+        attn,loss = self.attn(self.ln_1(x)) 
+        x = x + attn
         x = x + self.mlp(self.ln_2(x))
-        return x
+        return x,loss
 
 @dataclass
 class GPTConfig:
@@ -196,8 +207,11 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
+        
+        attn_loss = 0
         for block in self.transformer.h:
-            x = block(x)
+            x,loss = block(x)
+            attn_loss += loss
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -209,7 +223,7 @@ class GPT(nn.Module):
             logits = self.lm_head(x[:, [-1], :]) # note: using list [-1] to preserve the time dim
             loss = None
 
-        return logits, loss
+        return logits, loss, attn_loss
 
     def crop_block_size(self, block_size):
         # model surgery to decrease the block size if necessary
@@ -332,7 +346,7 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            logits, _, _  = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
