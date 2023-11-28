@@ -71,11 +71,8 @@ class CausalSelfAttention(nn.Module):
             #causal means the attention per token is not affected by future tokens
             #achieved by adding a bias
             attn_bias = torch.zeros(k.size(-2), k.size(-2), dtype=q.dtype)
-            temp_mask = torch.ones(k.size(-2), k.size(-2), dtype=torch.bool).tril()
-            attn_bias.masked_fill_(temp_mask.logical_not(), float("-inf"))
-            attn_bias.to(q.dtype)
-
-            #add the bias
+            bias_mask = torch.ones(k.size(-2), k.size(-2), dtype=torch.bool).tril()
+            attn_bias.masked_fill_(bias_mask.logical_not(), float("-inf"))
             att += attn_bias
 
             att = F.softmax(att, dim=-1)
